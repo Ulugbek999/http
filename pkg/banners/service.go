@@ -154,4 +154,4 @@ func uploadFile(file multipart.File, path string) error {
 
 	//если все успешно то вернем nil
 	return nil
-}
+} 
