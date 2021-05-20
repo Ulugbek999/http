@@ -3,219 +3,158 @@ package banners
 import (
 	"context"
 	"errors"
-	"io"
+	"fmt"
 	"io/ioutil"
-	"log"
 	"mime/multipart"
-	"net/http"
-	"strconv"
-	"strings"
+	//"fmt"
+	//"io"
+	//"mime/multipart"
+	//"ioutil"
+	// "log"
+	// "nethttp/pkg/banners"
 	"sync"
+
 )
 
-// Service npenctasnset co6oi cepsuc no ynpasnenwo OaHHepamn.
 type Service struct {
-	nextAccountID int64
-	mu            sync.RWMutex
-
+	mu    sync.RWMutex
 	items []*Banner
 }
 
-// NewService co3qaét cepsuc.
+//NewService . функция для создания нового сервиса
 func NewService() *Service {
 	return &Service{items: make([]*Banner, 0)}
-
 }
 
-// Banner npenctasnaet codoi GaHHep.
+//Banner ..Структура нашего баннера
 type Banner struct {
-	ID int64
-
-	Title string
-
+	ID      int64
+	Title   string
 	Content string
-
-	Button string
-
-	Link string
-
-	Image string
+	Button  string
+	Link    string
+	Image   string
 }
 
-// ByID Bo3BpawaeT OaHHep no upeHTHOuKaTopy.
-func (s *Service) ByID(ctx context.Context, id int64) (*Banner, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for _, banner := range s.items {
-		if banner.ID == id {
-			return banner, nil
-		}
-	}
+//это стартовый ID но для каждого создание баннера его изменяем
+var sID int64 = 0
 
-	return nil, errors.New("item not found")
-}
-
-// All for
+//All ...
 func (s *Service) All(ctx context.Context) ([]*Banner, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	// for _, banner := range s.items {
-	// 	if banner.ID == id {
-	// 		return banner, nil
-	// 	}
-	// }
-	// banners := s.items
-	// if len(s.items) == 0 {
-	// 	return nil, errors.New("no items found")
-	// }
+	//вернем все баннеры если их нет просто там окажется []
 	return s.items, nil
-	//panic("not implemented")
 }
 
-// Save for
-func (s *Service) Save(ctx context.Context, item *Banner, file multipart.File) (*Banner, error) {
-	//var lastID int64
+//ByID ...
+func (s *Service) ByID(ctx context.Context, id int64) (*Banner, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	//	for _, banner := range s.items {
-	if item.ID == 0 {
-		// lenBanners := len(s.items) - 1
-		// for i, banner := range s.items {
-		// 	if i == lenBanners {
-		// 		lastID = banner.ID
-		// 	}
-		// }
-		s.nextAccountID++
-		item.ID = s.nextAccountID
-		//		item.ID = int64(len(s.items)) + 1
-		nameImage := item.Image
-		if nameImage != "" {
-			extenIndex := strings.Index(nameImage, ".")
-			fileExtension := nameImage[extenIndex:]
-			item.Image = strconv.FormatInt(item.ID, 10) + fileExtension
+	for _, v := range s.items {
+		//если ID элемента равно ID из параметра то мы нашли баннер
+		if v.ID == id {
+			//вернем баннер и ошибку nil
+			return v, nil
 		}
-		saveFile(file, item)
-		s.items = append(s.items, item)
+	}
 
-		return item, nil
-	}
-	if item.ID != 0 {
-		for _, banner := range s.items {
-			if banner.ID == item.ID {
-				banner.Button = item.Button
-				banner.Content = item.Content
-				banner.Link = item.Link
-				banner.Title = item.Title
-				if item.Image != "" {
-					
-					banner.Image = item.Image
-					saveFile(file, item)
-				}
-				if item.Image == "" {
-					item.Image = banner.Image
-					//banner.Image = ""
-					// nameImage := item.Image
-					// extenIndex := strings.Index(nameImage, ".")
-					// fileExtension := nameImage[extenIndex:]
-					// item.Image = strconv.FormatInt(item.ID, 10) + fileExtension
-					// banner.Image = item.Image
-				}
-				
-				return item, nil
-			}
-		}
-	}
 	return nil, errors.New("item not found")
-
 }
 
-// RemoveByID for
+//Save ...
+func (s *Service) Save(ctx context.Context, item *Banner, file multipart.File) (*Banner, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	//Проверяем если id равно 0 то создаем баннер
+	if item.ID == 0 {
+		//увеличиваем стартовый ID
+		sID++
+		//выставляем новый ID для баннера
+		item.ID = sID
+		//проверяем если файл пришел то сохроняем его под нужную имя
+		if item.Image != "" {
+			//генерируем Id сейчас Id только (Jpg)
+			item.Image = fmt.Sprint(item.ID) + "." + item.Image
+			// если произашло ошибка возврашаем ошибку
+			err := uploadFile(file, "./web/banners/"+item.Image)
+			if err != nil {
+				return nil, err
+			}
+		}
+		//добавляем его в слайс
+		s.items = append(s.items, item)
+		//вернем баннер и ошибку nil
+		return item, nil
+	}
+	//если id не равно 0 то ишем его из сушествуеших
+	for k, v := range s.items {
+		//если нашли то заменяем старый баннер с новым
+		if v.ID == item.ID {
+
+			//проверяем если файл пришел то сохроняем его под нужную имя
+			if item.Image != "" {
+				//генерируем Id сейчас Id только (Jpg)
+				item.Image = fmt.Sprint(item.ID) + "." + item.Image
+				// визиваем функцию для сохранение если произашло ошибка возврашаем ошибку
+				err := uploadFile(file, "./web/banners/"+item.Image)
+
+				if err != nil {
+					return nil, err
+				}
+				
+			} else {
+				item.Image = s.items[k].Image
+			}
+
+			//если нашли то в слайс под индексом найденного выставим новый элемент
+			s.items[k] = item
+			//вернем баннер и ошибку nil
+			return item, nil
+		}
+	}
+	//если не нашли то вернем ошибку что у нас такого банера не сушествует
+	return nil, errors.New("item not found")
+}
+
+//RemoveByID ... Метод для удаления
 func (s *Service) RemoveByID(ctx context.Context, id int64) (*Banner, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	for i, banner := range s.items {
-		if banner.ID == id {
 
-			s.items = append(s.items[:i], s.items[i+1:]...)
-
-			return banner, nil
+	//ишем баннер из слайса
+	for k, v := range s.items {
+		//если нашли то удаляем его из слайса
+		if v.ID == id {
+			//берем все элементы до найденного и добавляем в него все элементы после найденного
+			s.items = append(s.items[:k], s.items[k+1:]...)
+			//вернем баннер и ошибку nil
+			return v, nil
 		}
 	}
 
+	//если не нашли то вернем ошибку что у нас такого банера не сушествует
 	return nil, errors.New("item not found")
 }
 
-// Initial for
-func (s *Service) Initial(request *http.Request) Banner {
-
-	idParam := request.URL.Query().Get("id")
-	id, err := strconv.ParseInt(idParam, 10, 64)
+//это функция сохраняет файл в сервере в заданной папке path и возврашает nil если все успешно или error если ест ошибка
+func uploadFile(file multipart.File, path string) error {
+	//прочитаем вес файл и получаем слайс из байтов
+	var data, err = ioutil.ReadAll(file)
+	//если не удалос прочитат то вернем ошибку
 	if err != nil {
-		log.Print(err)
-
+		return errors.New("not readble data")
 	}
 
-	titleParam := request.URL.Query().Get("title")
-	contentParam := request.URL.Query().Get("content")
-	buttonParam := request.URL.Query().Get("button")
-	linkParam := request.URL.Query().Get("link")
+	//записываем файл в заданной папке с публичными правами
+	err = ioutil.WriteFile(path, data, 0666)
 
-	banner := Banner{
-		ID: id,
-
-		Title: titleParam,
-
-		Content: contentParam,
-
-		Button: buttonParam,
-
-		Link: linkParam,
-
-		Image: "image1",
+	//если не удалось записыват файл то вернем ошибку
+	if err != nil {
+		return errors.New("not saved from folder ")
 	}
 
-	// banner2 := Banner{
-	// 	ID: 2,
-
-	// 	Title: "Title New",
-
-	// 	Content: "Content New",
-
-	// 	Button: "Button New",
-
-	// 	Link: "Link New",
-	// }
-
-	//item := s.items
-	//	s.items = append(s.items, &banner)
-	//s.items = append(s.items, &banner2)
-	//item[1] = &banner
-	//	panic("not implemented")
-
-	return banner
-}
-
-func saveFile(fileA multipart.File, item *Banner) {
-	content := make([]byte, 0)
-	buf := make([]byte, 4)
-		for {
-			read, err := fileA.Read(buf)
-			if err == io.EOF {
-				break
-			}
-			content = append(content, buf[:read]...)
-		}
-
-		fileNameNew := item.Image
-		if fileNameNew != "" {
-			wdd1 := "web/banners" + "/" + fileNameNew
-			//wdd1 := "c:/projects/http/web/banners" + "/" + fileNameNew
-			//log.Print(wdd)
-			err := ioutil.WriteFile(wdd1, content, 0600)
-			if err != nil {
-				log.Print(err)
-	
-			}
-		}
-		
+	//если все успешно то вернем nil
+	return nil
 }
