@@ -2,35 +2,29 @@ package server
 
 import (
 	"bytes"
-	"errors"
 	"io"
 	"log"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 )
 
-//HandlerFunc ...
+//lineBreaker - breaks the line.
+const lineBreaker string = "\r\n"
+
+//HandleFunc - handler.
 type HandlerFunc func(req *Request)
 
-var (
-	//ErrBadRequest ...
-	ErrBadRequest = errors.New("Bad Request")
-	//ErrMethodNotAlowed ..
-	ErrMethodNotAlowed = errors.New("Method not Alowed")
-	//ErrHTTPVersionNotValid ..
-	ErrHTTPVersionNotValid = errors.New("Http version not valid")
-)
-
-//Server ..
+//Server - Servers struct.
 type Server struct {
 	addr     string
 	mu       sync.RWMutex
 	handlers map[string]HandlerFunc
 }
 
-//Request ...
+//Request - requests struct.
 type Request struct {
 	Conn        net.Conn
 	QueryParams url.Values
@@ -39,162 +33,185 @@ type Request struct {
 	Body        []byte
 }
 
-//NewServer ...
+//NewServer - create server method.
 func NewServer(addr string) *Server {
-	return &Server{addr: addr, handlers: make(map[string]HandlerFunc)}
+	return &Server{
+		addr:     addr,
+		handlers: make(map[string]HandlerFunc),
+	}
 }
 
-//Register ...
+//Register - Register the connection(path URL).
 func (s *Server) Register(path string, handler HandlerFunc) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.handlers[path] = handler
 }
 
-//Start ...
-func (s *Server) Start() (err error) {
+//Start - starts server.
+func (s *Server) Start() error {
 	listener, err := net.Listen("tcp", s.addr)
 	if err != nil {
-		log.Println(err)
+		log.Print(err)
 		return err
 	}
 	defer func() {
 		if cerr := listener.Close(); cerr != nil {
-			err = cerr
-			return
+			if err == nil {
+				err = cerr
+				return
+			}
+			log.Print(cerr)
 		}
 	}()
+
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
+			log.Print(err)
 			continue
 		}
 		go s.handle(conn)
 	}
 }
+
+//handle - handles the connection
 func (s *Server) handle(conn net.Conn) {
-	defer conn.Close()
 
-	buf := make([]byte, (1024 * 8))
-	for {
-		n, err := conn.Read(buf)
-		if err == io.EOF {
-			log.Printf("%s", buf[:n])
+	defer func() {
+		if cerr := conn.Close(); cerr != nil {
+			log.Println(cerr)
 		}
-		if err != nil {
-			log.Println(err)
-			return
-		}
+	}()
 
-		var req Request
-		data := buf[:n]
-		rLD := []byte{'\r', '\n'}
-		rLE := bytes.Index(data, rLD)
-		if rLE == -1 {
-			log.Printf("Bad Request")
-			return
-		}
-
-		// headers
-		hLD := []byte{'\r', '\n', '\r', '\n'}
-		hLE := bytes.Index(data, hLD)
-		if rLE == -1 {
-			return
-		}
-
-		headersLine := string(data[rLE:hLE])
-		headers := strings.Split(headersLine, "\r\n")[1:]
-		mp := make(map[string]string)
-		for _, v := range headers {
-			headerLine := strings.Split(v, ": ")
-			mp[headerLine[0]] = headerLine[1]
-		}
-
-		req.Headers = mp
-
-		// Body
-		/* b := string(data[hLE:])
-		b = strings.Trim(b, "\r\n")
-		req.Body = []byte(b) */
-
-		req.Body = data[hLE+4:]
-
-		reqLine := string(data[:rLE])
-		parts := strings.Split(reqLine, " ")
-
-		if len(parts) != 3 {
-			log.Println(ErrBadRequest)
-			return
-		}
-		//method, path, version := parts[0], parts[1], parts[2]
-		path, version := parts[1], parts[2]
-		if version != "HTTP/1.1" {
-			log.Println(ErrHTTPVersionNotValid)
-			return
-		}
-
-		decode, err := url.PathUnescape(path)
-		if err != nil {
-			log.Println(err)
-			return
-		}
-
-		uri, err := url.ParseRequestURI(decode)
-		if err != nil {
-			log.Println(err)
-			return
-		}
-
-		req.Conn = conn
-		req.QueryParams = uri.Query()
-
-
-		var handler = func(req *Request) { conn.Close() }
-
-		s.mu.RLock()
-		pParam, hr := s.checkPath(uri.Path)
-		if hr != nil {
-			handler = hr
-			req.PathParams = pParam
-		}
-		s.mu.RUnlock()
-
-		handler(&req)
-
+	var req Request
+	buf := make([]byte, 4096)
+	n, err := conn.Read(buf)
+	if err == io.EOF {
+		log.Printf("Error EOF: %s", buf[:n])
+		return
+	}
+	if err != nil {
+		log.Println("Error not nil after reading", err)
+		return
 	}
 
+	//Parsing request line
+	data := buf[:n]
+	requestDelimetr := []byte{'\r', '\n'}
+	requestLine := bytes.Index(data, requestDelimetr)
+	if requestLine == -1 {
+		log.Print("requestLineErr: ", requestLine)
+		return
+	}
+
+	//Parsing header line
+	headerDelimetr := []byte{'\r', '\n', '\r', '\n'}
+	headerLine := bytes.Index(data, headerDelimetr)
+	if headerLine == -1 {
+		log.Print("headerLineEnd: ", headerLine)
+		return
+	}
+
+	headersLine := string(data[requestLine:headerLine])
+	// Use - header := strings.Split(headerLine, "\r\n")[1:]
+	// [1:] == [1:len(headerLine)]
+	// header will be without "", key of the header will start with one.
+	header := strings.Split(headersLine, "\r\n")
+
+	paramMap := make(map[string]string)
+	for _, v := range header {
+		if v != "" {
+			eachHeaderLine := strings.Split(v, ": ")
+			paramMap[eachHeaderLine[0]] = eachHeaderLine[1]
+		}
+	}
+	req.Headers = paramMap
+
+	//Parsing body line
+	body := string(data[headerLine:])
+	bodyLine := strings.Trim(body, "\r\n")
+	req.Body = []byte(bodyLine)
+
+	//Continuing to parsing the request lines
+	request := string(data[:requestLine])
+	parts := strings.Split(request, " ")
+	if len(parts) != 3 {
+		log.Print("Parts: ", parts)
+		return
+	}
+
+	path, version := parts[1], parts[2]
+	if version != "HTTP/1.1" {
+		log.Print("Version Not HTTP/1.1: ", version)
+		return
+	}
+
+	decoded, err := url.PathUnescape(path)
+	if err != nil {
+		log.Print(err)
+		return
+	}
+	log.Println(decoded)
+
+	uri, err := url.ParseRequestURI(decoded)
+	if err != nil {
+		log.Print(err)
+		return
+	}
+	log.Print(uri.Path)
+	log.Print(uri.Query())
+
+	req.Conn = conn
+	req.QueryParams = uri.Query()
+
+	handler := func(req *Request) {
+		req.Conn.Close()
+	}
+	s.mu.RLock()
+	pathPar, ok := s.findPath(uri.Path)
+	if ok != nil {
+		req.PathParams = pathPar
+		handler = ok
+	}
+	s.mu.RUnlock()
+	handler(&req)
 }
 
-func (s *Server) checkPath(path string) (map[string]string, HandlerFunc) {
+//findPath - ...
+func (s *Server) findPath(path string) (map[string]string, HandlerFunc) {
 
-	strRoutes := make([]string, len(s.handlers))
+	registRoutes := make([]string, len(s.handlers))
 	i := 0
 	for k := range s.handlers {
-		strRoutes[i] = k
+		registRoutes[i] = k
 		i++
 	}
 
-	mp := make(map[string]string)
+	paramMap := make(map[string]string)
 
-	for i := 0; i < len(strRoutes); i++ {
+	for i := 0; i < len(registRoutes); i++ {
 		flag := false
-		route := strRoutes[i]
-		partsRoute := strings.Split(route, "/")
-		pRotes := strings.Split(path, "/")
+		eachRegistRoutes := registRoutes[i]
+		partsOfRegistRoutes := strings.Split(eachRegistRoutes, "/")
+		partsOfClientRoutes := strings.Split(path, "/")
 
-		for j, v := range partsRoute {
+		for j, v := range partsOfRegistRoutes {
 			if v != "" {
 				f := v[0:1]
 				l := v[len(v)-1:]
 				if f == "{" && l == "}" {
-					mp[v[1:len(v)-1]] = pRotes[j]
+					paramMap[v[1:len(v)-1]] = partsOfClientRoutes[j] //id = "number"
 					flag = true
-				} else if pRotes[j] != v {
+				} else if partsOfClientRoutes[j] != v {
 
 					strs := strings.Split(v, "{")
 					if len(strs) > 0 {
-						key := strs[1][:len(strs[1])-1]
-						mp[key] = pRotes[j][len(strs[0]):]
+						key := strs[1][:len(strs[1])-1] // key = "id}"->"id"
+						//Here could be error output, if client route won't match with registred route.
+						//Example: [clientRoute][registredRoute]
+						//[categories2][category] -> "es2" and the value will - param[id] = es2
+						paramMap[key] = partsOfClientRoutes[j][len(strs[0]):]
 						flag = true
 					} else {
 						flag = false
@@ -205,8 +222,8 @@ func (s *Server) checkPath(path string) (map[string]string, HandlerFunc) {
 			}
 		}
 		if flag {
-			if hr, found := s.handlers[route]; found {
-				return mp, hr
+			if function, status := s.handlers[eachRegistRoutes]; status {
+				return paramMap, function
 			}
 			break
 		}
@@ -214,4 +231,13 @@ func (s *Server) checkPath(path string) (map[string]string, HandlerFunc) {
 
 	return nil, nil
 
+}
+
+//Responce - response to request.
+func (s *Server) Response(body string) string {
+	return "HTTP/1.1 200 OK\r\n" +
+		"Content-Length: " + strconv.Itoa(len(body)) + lineBreaker +
+		"Content-Type: text/html\r\n" +
+		"Connection: close\r\n" +
+		lineBreaker + body
 }
