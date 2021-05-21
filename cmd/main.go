@@ -1,44 +1,42 @@
 package main
 
 import (
-	"github.com/Ulugbek999/http.git/pkg/banners"
-	"github.com/Ulugbek999/http.git/cmd/app"
-	
-	
+	"github.com/Ulugbek999/http.git/pkg/server"
+	"log"
 	"net"
-	"net/http"
 	"os"
-
 )
 
 func main() {
-	//обьявляем порт и хост
 	host := "0.0.0.0"
 	port := "9999"
 
-	//вызываем фукцию execute если получили ошибку то закрываем программу с ошибкой
+	log.Println("Server is listening...")
 	if err := execute(host, port); err != nil {
 		os.Exit(1)
 	}
 }
 
-func execute(h, p string) error {
-	//создаём новый мукс для хандлеров
-	mux := http.NewServeMux()
-	//создаём новый сервис
-	bnrSvc := banners.NewService()
+func execute(host string, port string) (err error) {
+	srv := server.NewServer(net.JoinHostPort(host, port))
 
-	//создаём новый сервер с сервисами
-	sr := app.NewServer(mux, bnrSvc)
 
-	//инициализируем сервер и регистрируем новый роутеры
-	sr.Init()
 
-	//создаём новый HTTP server
-	srv := &http.Server{
-		Addr:    net.JoinHostPort(h, p),
-		Handler: sr,
-	}
-	//запускаем сервер и если получим ошибку то его вернем в резултать
-	return srv.ListenAndServe()
-} 
+
+	srv.Register("/category{id1}/{id2}", func(req *server.Request) {
+		id1 := req.PathParams["id1"]
+		log.Print(id1)
+		
+		id2 := req.PathParams["id2"]
+		log.Print(id2)
+
+		body := "About Golang Academy"
+		_, err = req.Conn.Write([]byte(srv.Response(body)))
+		if err != nil {
+			log.Print(err)
+			return
+		}
+	})
+
+	return srv.Start()
+}
