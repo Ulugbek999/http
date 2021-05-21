@@ -2,29 +2,35 @@ package server
 
 import (
 	"bytes"
+	"errors"
 	"io"
-	"strconv"
-	"strings"
-
 	"log"
 	"net"
 	"net/url"
+	"strings"
 	"sync"
 )
 
-// HandlerFunc handler
+//HandlerFunc ...
 type HandlerFunc func(req *Request)
 
-// Server class
+var (
+	//ErrBadRequest ...
+	ErrBadRequest = errors.New("Bad Request")
+	//ErrMethodNotAlowed ..
+	ErrMethodNotAlowed = errors.New("Method not Alowed")
+	//ErrHTTPVersionNotValid ..
+	ErrHTTPVersionNotValid = errors.New("Http version not valid")
+)
+
+//Server ..
 type Server struct {
-	addr string
-
-	mu sync.RWMutex
-
+	addr     string
+	mu       sync.RWMutex
 	handlers map[string]HandlerFunc
 }
 
-// Request class
+//Request ...
 type Request struct {
 	Conn        net.Conn
 	QueryParams url.Values
@@ -33,105 +39,97 @@ type Request struct {
 	Body        []byte
 }
 
-// NewServer can create new servers
+//NewServer ...
 func NewServer(addr string) *Server {
 	return &Server{addr: addr, handlers: make(map[string]HandlerFunc)}
-
 }
 
-// Register path
+//Register ...
 func (s *Server) Register(path string, handler HandlerFunc) {
-	s.mu.RLock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.handlers[path] = handler
-	s.mu.RUnlock()
 }
 
-// Start is main function
-func (s *Server) Start() error {
+//Start ...
+func (s *Server) Start() (err error) {
 	listener, err := net.Listen("tcp", s.addr)
 	if err != nil {
-		log.Print(err)
+		log.Println(err)
 		return err
 	}
-
 	defer func() {
 		if cerr := listener.Close(); cerr != nil {
-
-			if err == nil {
-				err = cerr
-				return
-			}
-			log.Print(cerr)
+			err = cerr
+			return
 		}
 	}()
-
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			log.Print(err)
 			continue
 		}
-
 		go s.handle(conn)
 	}
 }
-
 func (s *Server) handle(conn net.Conn) {
 	defer conn.Close()
 
 	buf := make([]byte, (1024 * 8))
 	for {
-		bufferSize, err := conn.Read(buf)
+		n, err := conn.Read(buf)
 		if err == io.EOF {
-			log.Printf("%s", buf[:bufferSize])
+			log.Printf("%s", buf[:n])
 		}
-
 		if err != nil {
 			log.Println(err)
 			return
 		}
 
 		var req Request
-		data := buf[:bufferSize]
-
-		endOfLine := []byte{'\r', '\n'}
-		endIndex := bytes.Index(data, endOfLine)
-
-		if endIndex == -1 {
+		data := buf[:n]
+		rLD := []byte{'\r', '\n'}
+		rLE := bytes.Index(data, rLD)
+		if rLE == -1 {
+			log.Printf("Bad Request")
 			return
 		}
 
-		lineEnders := []byte{'\r', '\n', '\r', '\n'}
-		lineIndex := bytes.Index(data, lineEnders)
-		if endIndex == -1 {
+		// headers
+		hLD := []byte{'\r', '\n', '\r', '\n'}
+		hLE := bytes.Index(data, hLD)
+		if rLE == -1 {
 			return
 		}
 
-		headersLine := string(data[endIndex:lineIndex])
+		headersLine := string(data[rLE:hLE])
 		headers := strings.Split(headersLine, "\r\n")[1:]
-
-		headerTo := make(map[string]string)
+		mp := make(map[string]string)
 		for _, v := range headers {
 			headerLine := strings.Split(v, ": ")
-			headerTo[headerLine[0]] = headerLine[1]
+			mp[headerLine[0]] = headerLine[1]
 		}
 
-		req.Headers = headerTo
+		req.Headers = mp
 
-		newData := string(data[lineIndex:])
-		newData = strings.Trim(newData, "\r\n")
+		// Body
+		/* b := string(data[hLE:])
+		b = strings.Trim(b, "\r\n")
+		req.Body = []byte(b) */
 
-		req.Body = []byte(newData)
+		req.Body = data[hLE+4:]
 
-		reqLine := string(data[:endIndex])
+		reqLine := string(data[:rLE])
 		parts := strings.Split(reqLine, " ")
 
 		if len(parts) != 3 {
+			log.Println(ErrBadRequest)
 			return
 		}
-
+		//method, path, version := parts[0], parts[1], parts[2]
 		path, version := parts[1], parts[2]
 		if version != "HTTP/1.1" {
+			log.Println(ErrHTTPVersionNotValid)
 			return
 		}
 
@@ -150,21 +148,25 @@ func (s *Server) handle(conn net.Conn) {
 		req.Conn = conn
 		req.QueryParams = uri.Query()
 
+
 		var handler = func(req *Request) { conn.Close() }
 
 		s.mu.RLock()
-		pathParameters, hr := s.validate(uri.Path)
+		pParam, hr := s.checkPath(uri.Path)
 		if hr != nil {
 			handler = hr
-			req.PathParams = pathParameters
+			req.PathParams = pParam
 		}
 		s.mu.RUnlock()
 
 		handler(&req)
+
 	}
+
 }
 
-func (s *Server) validate(path string) (map[string]string, HandlerFunc) {
+func (s *Server) checkPath(path string) (map[string]string, HandlerFunc) {
+
 	strRoutes := make([]string, len(s.handlers))
 	i := 0
 	for k := range s.handlers {
@@ -172,7 +174,7 @@ func (s *Server) validate(path string) (map[string]string, HandlerFunc) {
 		i++
 	}
 
-	headerTo := make(map[string]string)
+	mp := make(map[string]string)
 
 	for i := 0; i < len(strRoutes); i++ {
 		flag := false
@@ -185,14 +187,14 @@ func (s *Server) validate(path string) (map[string]string, HandlerFunc) {
 				f := v[0:1]
 				l := v[len(v)-1:]
 				if f == "{" && l == "}" {
-					headerTo[v[1:len(v)-1]] = pRotes[j]
+					mp[v[1:len(v)-1]] = pRotes[j]
 					flag = true
 				} else if pRotes[j] != v {
 
 					strs := strings.Split(v, "{")
 					if len(strs) > 0 {
 						key := strs[1][:len(strs[1])-1]
-						headerTo[key] = pRotes[j][len(strs[0]):]
+						mp[key] = pRotes[j][len(strs[0]):]
 						flag = true
 					} else {
 						flag = false
@@ -204,7 +206,7 @@ func (s *Server) validate(path string) (map[string]string, HandlerFunc) {
 		}
 		if flag {
 			if hr, found := s.handlers[route]; found {
-				return headerTo, hr
+				return mp, hr
 			}
 			break
 		}
@@ -213,12 +215,3 @@ func (s *Server) validate(path string) (map[string]string, HandlerFunc) {
 	return nil, nil
 
 }
-
-// Response common answer
-func (s *Server) Response(body string) string {
-	return "HTTP/1.1 200 OK\r\n" +
-		"Content-Length: " + strconv.Itoa(len(body)) + "\r\n" +
-		"Content-Type: text/html\r\n" +
-		"Connection: close\r\n" +
-		"\r\n" + body
-} 
